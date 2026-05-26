@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+.claude/
+Poshan_AI_Proposal.docx
+Poshan_AI_Proposal.pdf
+RAG_Pipeline_Notes.pdf
+docs for poshan/
+terminal.txt
+*.env
+.env
