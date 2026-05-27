@@ -31,39 +31,43 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 # ── RAG — manual KB ───────────────────────────────────────────────────────────
 import json as _json
 from pathlib import Path as _Path
+try:
+    from rank_bm25 import BM25Okapi as _BM25Okapi
+except ImportError:
+    _BM25Okapi = None
 
-print("[startup] Loading embedding model + pre-built FAISS index…")
+print("[startup] Building BM25 index from knowledge base…")
 t0 = time.time()
-_MANUAL_INDEX_PATH = _Path(__file__).parent / "manual_faiss.index"
 _MANUAL_TEXTS_PATH = _Path(__file__).parent / "manual_texts.json"
 try:
-    from sentence_transformers import SentenceTransformer
-    import faiss
-    _emb  = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-    _docs_data = _json.loads(_MANUAL_TEXTS_PATH.read_text(encoding="utf-8"))
-    _texts     = [f"{d['title']}\n{d['content']}" for d in _docs_data]
-    _idx       = faiss.read_index(str(_MANUAL_INDEX_PATH))
-    RAG_OK     = True
-    print(f"[startup] Manual RAG ready in {time.time()-t0:.1f}s — {_idx.ntotal} vectors")
+    if _BM25Okapi is None:
+        raise ImportError("rank_bm25 not installed")
+    _docs_data    = _json.loads(_MANUAL_TEXTS_PATH.read_text(encoding="utf-8"))
+    _texts        = [f"{d['title']}\n{d['content']}" for d in _docs_data]
+    _manual_bm25  = _BM25Okapi([t.split() for t in _texts])
+    RAG_OK        = True
+    print(f"[startup] Manual BM25 ready in {time.time()-t0:.1f}s — {len(_texts)} docs")
 except Exception as e:
     print(f"[startup] RAG unavailable: {e}")
-    RAG_OK = False
+    RAG_OK       = False
+    _manual_bm25 = None
 
-# ── RAG — PDF knowledge base (pre-built by pdf_ingest.py) ────────────────────
-_PDF_INDEX_PATH  = _Path(__file__).parent / "pdf_faiss.index"
+# ── RAG — PDF knowledge base ─────────────────────────────────────────────────
 _PDF_CHUNKS_PATH = _Path(__file__).parent / "pdf_chunks.json"
 
-print("[startup] Loading PDF FAISS index…")
+print("[startup] Building BM25 index from PDF chunks…")
 try:
+    if _BM25Okapi is None:
+        raise ImportError("rank_bm25 not installed")
     _pdf_chunks: list[dict] = _json.loads(_PDF_CHUNKS_PATH.read_text(encoding="utf-8"))
-    _pdf_idx    = faiss.read_index(str(_PDF_INDEX_PATH))
+    _pdf_bm25   = _BM25Okapi([c["content"].split() for c in _pdf_chunks])
     PDF_RAG_OK  = True
-    print(f"[startup] PDF RAG ready — {len(_pdf_chunks)} chunks, {_pdf_idx.ntotal} vectors")
+    print(f"[startup] PDF BM25 ready — {len(_pdf_chunks)} chunks")
 except Exception as e:
     print(f"[startup] PDF RAG unavailable: {e}")
     PDF_RAG_OK  = False
     _pdf_chunks = []
-    _pdf_idx    = None
+    _pdf_bm25   = None
 
 _rag_cache: dict = {}
 
@@ -75,29 +79,30 @@ def rag_search(query: str, k: int = 5) -> list[dict]:
     if cache_key in _rag_cache:
         return _rag_cache[cache_key]
 
-    q_vec = _emb.encode([query], convert_to_numpy=True).astype("float32")
-    faiss.normalize_L2(q_vec)
+    tokens = query.split()
 
     # ── manual docs ───────────────────────────────────────────────────────
-    scores_m, idxs_m = _idx.search(q_vec, k)
-    manual = [
+    scores_m = _manual_bm25.get_scores(tokens)
+    top_m    = np.argsort(scores_m)[-k:][::-1]
+    manual   = [
         {"id": DOCS[i]["id"], "title": DOCS[i]["title"],
          "snippet": DOCS[i]["content"].strip()[:400] + "…",
          "full": DOCS[i]["content"].strip(),
          "source": "Poshan KB", "page": None,
-         "score": round(float(s), 3)}
-        for s, i in zip(scores_m[0], idxs_m[0]) if i >= 0
+         "score": round(float(scores_m[i]), 3)}
+        for i in top_m if scores_m[i] > 0
     ]
 
     # ── PDF docs ──────────────────────────────────────────────────────────
     pdf = []
-    if PDF_RAG_OK and _pdf_idx is not None:
-        scores_p, idxs_p = _pdf_idx.search(q_vec, k)
+    if PDF_RAG_OK and _pdf_bm25 is not None:
+        scores_p     = _pdf_bm25.get_scores(tokens)
+        top_p        = np.argsort(scores_p)[-k * 3:][::-1]
         seen_sources: set = set()
-        for s, i in zip(scores_p[0], idxs_p[0]):
-            if i < 0 or float(s) < 0.35:
+        for i in top_p:
+            if scores_p[i] <= 0:
                 continue
-            c = _pdf_chunks[i]
+            c   = _pdf_chunks[i]
             key = c["source"]
             if key in seen_sources:
                 continue
@@ -107,8 +112,10 @@ def rag_search(query: str, k: int = 5) -> list[dict]:
                 "snippet": c["content"][:400] + "…",
                 "full": c["content"],
                 "source": c["source"], "page": c["page"],
-                "score": round(float(s), 3),
+                "score": round(float(scores_p[i]), 3),
             })
+            if len(pdf) >= k:
+                break
 
     # ── merge: interleave manual (higher trust) + PDF ─────────────────────
     combined = []

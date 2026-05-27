@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 python-multipart
 requests
-sentence-transformers
-faiss-cpu
+rank-bm25
 numpy
 pydantic
