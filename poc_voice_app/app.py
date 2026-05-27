@@ -18,10 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from collections import deque
-try:
-    from poshan_kb import DOCS
-except ImportError:
-    from poc_voice_app.poshan_kb import DOCS
+from poshan_kb import DOCS
 
 SARVAM_KEY  = os.getenv("SARVAM_API_KEY", "sk_l6rldfif_gSyfCcpZP0RXcyJNlIgb15Vr")
 SAMPLE_RATE = 16000
