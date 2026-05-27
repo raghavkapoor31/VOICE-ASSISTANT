@@ -32,20 +32,19 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 import json as _json
 from pathlib import Path as _Path
 
-print("[startup] Loading embedding model + manual FAISS index…")
+print("[startup] Loading embedding model + pre-built FAISS index…")
 t0 = time.time()
+_MANUAL_INDEX_PATH = _Path(__file__).parent / "manual_faiss.index"
+_MANUAL_TEXTS_PATH = _Path(__file__).parent / "manual_texts.json"
 try:
     from sentence_transformers import SentenceTransformer
     import faiss
-    import numpy as _np
-    _emb    = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-    _texts  = [f"{d['title']}\n{d['content']}" for d in DOCS]
-    _vecs   = _emb.encode(_texts, convert_to_numpy=True).astype("float32")
-    faiss.normalize_L2(_vecs)
-    _idx    = faiss.IndexFlatIP(_vecs.shape[1])
-    _idx.add(_vecs)
-    RAG_OK  = True
-    print(f"[startup] Manual RAG ready in {time.time()-t0:.1f}s — {len(_texts)} docs")
+    _emb  = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    _docs_data = _json.loads(_MANUAL_TEXTS_PATH.read_text(encoding="utf-8"))
+    _texts     = [f"{d['title']}\n{d['content']}" for d in _docs_data]
+    _idx       = faiss.read_index(str(_MANUAL_INDEX_PATH))
+    RAG_OK     = True
+    print(f"[startup] Manual RAG ready in {time.time()-t0:.1f}s — {_idx.ntotal} vectors")
 except Exception as e:
     print(f"[startup] RAG unavailable: {e}")
     RAG_OK = False
